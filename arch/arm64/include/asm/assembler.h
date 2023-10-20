@@ -23,6 +23,8 @@
 #ifndef __ASM_ASSEMBLER_H
 #define __ASM_ASSEMBLER_H
 
+#include <asm-generic/export.h>
+
 #include <asm/asm-offsets.h>
 #include <asm/cpufeature.h>
 #include <asm/cputype.h>
@@ -87,6 +89,13 @@
  */
 	.macro	enable_dbg_and_irq
 	msr	daifclr, #(8 | 2)
+	.endm
+
+/* Enable debug exceptions, SError and interrupts.
+ *
+ */
+	.macro	enable_dbg_err_irq
+	msr	daifclr, #(8 | 4 | 2)
 	.endm
 
 /*
@@ -458,6 +467,13 @@ alternative_endif
 #else
 #define NOKPROBE(x)
 #endif
+
+#ifdef CONFIG_KASAN
+#define EXPORT_SYMBOL_NOKASAN(name)
+#else
+#define EXPORT_SYMBOL_NOKASAN(name)	EXPORT_SYMBOL(name)
+#endif
+
 	/*
 	 * Emit a 64-bit absolute little endian symbol reference in a way that
 	 * ensures that it will be resolved at build time, even when building a

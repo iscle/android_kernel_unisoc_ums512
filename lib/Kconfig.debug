@@ -8,12 +8,58 @@ config PRINTK_TIME
 	  messages to be added to the output of the syslog() system
 	  call and at the console.
 
+choice
+	prompt "printk default clock timestamp" if PRINTK_TIME
+	default PRINTK_TIME_LOCAL if PRINTK_TIME
+	help
+	  This option is selected by setting one of
+	  PRINTK_TIME_[DISABLE|LOCAL|BOOT|MONO|REAL] and causes time stamps of
+	  the printk() messages to be added to the output of the syslog()
+	  system call and at the console.
+
 	  The timestamp is always recorded internally, and exported
 	  to /dev/kmsg. This flag just specifies if the timestamp should
 	  be included, not that the timestamp is recorded.
 
 	  The behavior is also controlled by the kernel command line
-	  parameter printk.time=1. See Documentation/admin-guide/kernel-parameters.rst
+	  parameter printk.time. See
+	  Documentation/admin-guide/kernel-parameters.rst
+
+config PRINTK_TIME_LOCAL
+	bool "Local Clock"
+	help
+	  Selecting this option causes the time stamps of printk() to be
+	  stamped with the unadjusted hardware clock.
+
+config PRINTK_TIME_BOOT
+	bool "Boot Time Clock"
+	help
+	  Selecting this option causes the time stamps of printk() to be
+	  stamped with the adjusted boottime clock.
+
+config PRINTK_TIME_MONO
+	bool "Monotonic Clock"
+	help
+	  Selecting this option causes the time stamps of printk() to be
+	  stamped with the adjusted monotonic clock.
+
+config PRINTK_TIME_REAL
+	bool "Real Time Clock"
+	help
+	  Selecting this option causes the time stamps of printk() to be
+	  stamped with the adjusted realtime clock (UTC).
+endchoice
+
+config PRINTK_TIME_TYPE
+	int
+	depends on PRINTK
+	range 0 4
+	default 0 if !PRINTK_TIME
+	default 1 if PRINTK_TIME_LOCAL
+	default 2 if PRINTK_TIME_BOOT
+	default 3 if PRINTK_TIME_MONO
+	default 4 if PRINTK_TIME_REAL
+
 
 config CONSOLE_LOGLEVEL_DEFAULT
 	int "Default console loglevel (1-15)"
@@ -29,6 +75,17 @@ config CONSOLE_LOGLEVEL_DEFAULT
 	  Note: This does not affect the log level of un-prefixed printk()
 	  usage in the kernel. That is controlled by the MESSAGE_LOGLEVEL_DEFAULT
 	  option.
+
+config PRINTK_CPUID
+	bool "Show cpuid information on printks"
+	depends on PRINTK
+	help
+	  Selecting this option causes cpuid of the printk()
+	  messages to be added to the output of the syslog() system
+	  call and at the console.
+
+	  The behavior is also controlled by the kernel command line
+	  parameter printk.cpuid=1. See Documentation/kernel-parameters.txt
 
 config MESSAGE_LOGLEVEL_DEFAULT
 	int "Default message log level (1-7)"
@@ -217,7 +274,6 @@ config ENABLE_MUST_CHECK
 config FRAME_WARN
 	int "Warn for stack frames larger than (needs gcc 4.4)"
 	range 0 8192
-	default 3072 if KASAN_EXTRA
 	default 2048 if GCC_PLUGIN_LATENT_ENTROPY
 	default 1280 if (!64BIT && PARISC)
 	default 1024 if (!64BIT && !PARISC)
@@ -867,6 +923,10 @@ config BOOTPARAM_SOFTLOCKUP_PANIC_VALUE
 	range 0 1
 	default 0 if !BOOTPARAM_SOFTLOCKUP_PANIC
 	default 1 if BOOTPARAM_SOFTLOCKUP_PANIC
+
+config HARDLOCKUP_DETECTOR_OTHER_CPU
+	bool "Detect Hard Lockups by other CPU"
+	depends on SOFTLOCKUP_DETECTOR
 
 config DETECT_HUNG_TASK
 	bool "Detect Hung Tasks"

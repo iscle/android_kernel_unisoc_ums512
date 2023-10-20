@@ -145,6 +145,7 @@ config CPU_THERMAL
 	bool "generic cpu cooling support"
 	depends on CPU_FREQ
 	depends on THERMAL_OF
+	depends on !ARCH_SPRD
 	help
 	  This implements the generic cpu cooling mechanism through frequency
 	  reduction. An ACPI version of this already exists
@@ -481,4 +482,81 @@ config UNIPHIER_THERMAL
 	  Enable this to plug in UniPhier on-chip PVT thermal driver into the
 	  thermal framework. The driver supports CPU thermal zone temperature
 	  reporting and a couple of trip points.
+
+config SPRD_THERMAL
+	tristate "Spreadtrum Soc Thermal Support"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on THERMAL_OF
+	help
+	  Enable the spreadtrum soc thermal sensor dirver, which supports
+          thermal framework to get the temp of cpu/gpu thermal zone.
+
+config SPRD_DEDICATE_THERMAL
+	tristate "Spreadtrum SoC Dedicated Thermal Support"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on THERMAL_OF
+	help
+	  Enable the spreadtrum soc thermal sensor dirver, which supports
+          thermal framework to get the temp of cpu/gpu thermal zone.
+
+config SPRD_CPU_COOLING
+	bool "sprd cpu cooling support"
+	depends on ARCH_SPRD && THERMAL
+	help
+	  This implements the sprd's cpu cooling mechanism through
+	  frequency reduction for devices using dvfs and trigger cpu hotplug.
+
+config SPRD_CPU_COOLING_CPUIDLE
+	bool "sprd cpu idle cooling policy"
+	depends on SPRD_CPU_COOLING
+	depends on CPU_IDLE && SPRD_CORE_CTL
+	help
+	  This implements the generic CPU cooling mechanism through
+	  idle injection.this will throttle the CPU by injecting
+	  fixed idle cycle.so that it can enter into the deepest idle state
+	  to reduce power consumption.
+
+config SPRD_CPU_COOLING_DEVICE
+	bool "sprd cpu cooling device"
+	depends on THERMAL
+	depends on SPRD_CPU_COOLING
+	help
+	  Say Y here to create cpu cooling device node and build power model for IPA.
+	  so that the sprd cooling devices can be bound to thermal zone trip points.
+
+config SPRD_GPU_COOLING_DEVICE
+	bool "sprd gpu cooling device"
+	depends on THERMAL
+	depends on DEVFREQ_THERMAL
+	help
+	  Say Y here to create gpu cooling device node and build power model for IPA.
+	  so that the sprd cooling devices can be bound to thermal zone trip points.
+
+config SPRD_CLUSTER0_THERMAL
+	bool "sprd cluster0 thermal"
+	depends on THERMAL && SPRD_THERMAL
+	help
+	  Say Y here to support virtual thermal for little cpu
+	  We can use it to monitor little cpu temperature
+
+config SPRD_CLUSTER1_THERMAL
+	bool "sprd cluster1 thermal"
+	depends on THERMAL && SPRD_THERMAL
+	help
+	  Say Y here to support virtual thermal for big cpu
+	  We can use it to monitor big cpu temperature
+
+config SPRD_SOC_THERMAL
+	bool "sprd soc thermal"
+	depends on THERMAL && SPRD_THERMAL
+	help
+	  Say Y here to support virtual thermal for soc chip
+	  We can use it to monitor soc junction temperature
+
+config SC27XX_TSENSOR_THERMAL
+	tristate "Spreadtrum SC27xx Tsensor Thermal Support"
+	depends on MFD_SC27XX_PMIC || COMPILE_TEST
+	help
+	  This is a simple driver to get sc27xx chip osc temperature
+	  and external cystal temperature.
 endif

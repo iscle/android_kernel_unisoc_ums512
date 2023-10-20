@@ -62,7 +62,7 @@ MODULE_ALIAS("mmc:block");
 #endif
 #define MODULE_PARAM_PREFIX "mmcblk."
 
-#define MMC_BLK_TIMEOUT_MS  (10 * 60 * 1000)        /* 10 minute timeout */
+#define MMC_BLK_TIMEOUT_MS  (10 * 1000)        /* 10 second timeout */
 #define MMC_SANITIZE_REQ_TIMEOUT 240000
 #define MMC_EXTRACT_INDEX_FROM_ARG(x) ((x & 0x00FF0000) >> 16)
 #define MMC_EXTRACT_VALUE_FROM_ARG(x) ((x & 0x0000FF00) >> 8)
@@ -133,6 +133,22 @@ MODULE_PARM_DESC(perdev_minors, "Minors numbers to allocate per device");
 
 static inline int mmc_blk_part_switch(struct mmc_card *card,
 				      unsigned int part_type);
+
+static void mmc_remove_defective_card(struct mmc_host *host)
+{
+	if (!host || !host->card) {
+		pr_err("%s: %s: host or card is NULL, can't remove\n",
+		       mmc_hostname(host), __func__);
+		return;
+	}
+
+	if (mmc_card_sd(host->card)) {
+		mmc_card_set_removed(host->card);
+		mmc_power_off(host);
+		pr_info("%s: %s: only set sd to remove status and power off\n",
+			mmc_hostname(host), __func__);
+	}
+}
 
 static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
 {
@@ -612,12 +628,18 @@ static int mmc_blk_ioctl_cmd(struct mmc_blk_data *md,
 		err = PTR_ERR(req);
 		goto cmd_done;
 	}
-	idatas[0] = idata;
-	req_to_mmc_queue_req(req)->drv_op = MMC_DRV_OP_IOCTL;
-	req_to_mmc_queue_req(req)->drv_op_data = idatas;
-	req_to_mmc_queue_req(req)->ioc_count = 1;
-	blk_execute_rq(mq->queue, NULL, req, 0);
-	ioc_err = req_to_mmc_queue_req(req)->drv_op_result;
+	if (mmc_access_rpmb(mq)) {
+		mmc_get_card(card);
+		ioc_err = __mmc_blk_ioctl_cmd(card, md, idata);
+		mmc_put_card(card);
+	} else {
+		idatas[0] = idata;
+		req_to_mmc_queue_req(req)->drv_op = MMC_DRV_OP_IOCTL;
+		req_to_mmc_queue_req(req)->drv_op_data = idatas;
+		req_to_mmc_queue_req(req)->ioc_count = 1;
+		blk_execute_rq(mq->queue, NULL, req, 0);
+		ioc_err = req_to_mmc_queue_req(req)->drv_op_result;
+	}
 	err = mmc_blk_ioctl_copy_to_user(ic_ptr, idata);
 	blk_put_request(req);
 
@@ -679,11 +701,18 @@ static int mmc_blk_ioctl_multi_cmd(struct mmc_blk_data *md,
 		err = PTR_ERR(req);
 		goto cmd_err;
 	}
-	req_to_mmc_queue_req(req)->drv_op = MMC_DRV_OP_IOCTL;
-	req_to_mmc_queue_req(req)->drv_op_data = idata;
-	req_to_mmc_queue_req(req)->ioc_count = num_of_cmds;
-	blk_execute_rq(mq->queue, NULL, req, 0);
-	ioc_err = req_to_mmc_queue_req(req)->drv_op_result;
+	if (mmc_access_rpmb(mq)) {
+		mmc_get_card(card);
+		for (i = 0; i < num_of_cmds && !ioc_err; i++)
+			ioc_err = __mmc_blk_ioctl_cmd(card, md, idata[i]);
+		mmc_put_card(card);
+	} else {
+		req_to_mmc_queue_req(req)->drv_op = MMC_DRV_OP_IOCTL;
+		req_to_mmc_queue_req(req)->drv_op_data = idata;
+		req_to_mmc_queue_req(req)->ioc_count = num_of_cmds;
+		blk_execute_rq(mq->queue, NULL, req, 0);
+		ioc_err = req_to_mmc_queue_req(req)->drv_op_result;
+	}
 
 	/* copy to user if data and response */
 	for (i = 0; i < num_of_cmds && !err; i++)
@@ -1900,6 +1929,7 @@ static void mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *new_req)
 		case MMC_BLK_CMD_ERR:
 			req_pending = mmc_blk_rw_cmd_err(md, card, brq, old_req, req_pending);
 			if (mmc_blk_reset(md, card->host, type)) {
+				mmc_remove_defective_card(card->host);
 				if (req_pending)
 					mmc_blk_rw_cmd_abort(mq, card, old_req, mq_rq);
 				else
@@ -1921,6 +1951,7 @@ static void mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *new_req)
 		case MMC_BLK_ABORT:
 			if (!mmc_blk_reset(md, card->host, type))
 				break;
+			mmc_remove_defective_card(card->host);
 			mmc_blk_rw_cmd_abort(mq, card, old_req, mq_rq);
 			mmc_blk_rw_try_restart(mq, new_req, mqrq_cur);
 			return;
@@ -1930,6 +1961,7 @@ static void mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *new_req)
 			err = mmc_blk_reset(md, card->host, type);
 			if (!err)
 				break;
+			mmc_remove_defective_card(card->host);
 			if (err == -ENODEV) {
 				mmc_blk_rw_cmd_abort(mq, card, old_req, mq_rq);
 				mmc_blk_rw_try_restart(mq, new_req, mqrq_cur);

@@ -411,7 +411,6 @@ static struct sysrq_key_op sysrq_thaw_op = {
 static void sysrq_handle_kill(int key)
 {
 	send_sig_all(SIGKILL);
-	console_loglevel = CONSOLE_LOGLEVEL_DEBUG;
 }
 static struct sysrq_key_op sysrq_kill_op = {
 	.handler	= sysrq_handle_kill,
@@ -533,7 +532,6 @@ static void __sysrq_put_key_op(int key, struct sysrq_key_op *op_p)
 void __handle_sysrq(int key, bool check_mask)
 {
 	struct sysrq_key_op *op_p;
-	int orig_log_level;
 	int i;
 
 	rcu_sysrq_start();
@@ -544,8 +542,6 @@ void __handle_sysrq(int key, bool check_mask)
 	 * simply emit this at KERN_EMERG as that would change message
 	 * routing in the consumers of /proc/kmsg.
 	 */
-	orig_log_level = console_loglevel;
-	console_loglevel = CONSOLE_LOGLEVEL_DEFAULT;
 	pr_info("SysRq : ");
 
         op_p = __sysrq_get_key_op(key);
@@ -556,7 +552,6 @@ void __handle_sysrq(int key, bool check_mask)
 		 */
 		if (!check_mask || sysrq_on_mask(op_p->enable_mask)) {
 			pr_cont("%s\n", op_p->action_msg);
-			console_loglevel = orig_log_level;
 			op_p->handler(key);
 		} else {
 			pr_cont("This sysrq operation is disabled.\n");
@@ -577,7 +572,6 @@ void __handle_sysrq(int key, bool check_mask)
 			}
 		}
 		pr_cont("\n");
-		console_loglevel = orig_log_level;
 	}
 	rcu_read_unlock();
 	rcu_sysrq_end();

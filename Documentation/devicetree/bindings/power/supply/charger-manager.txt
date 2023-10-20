@@ -11,7 +11,7 @@ Required properties :
 	- cm-regulator-name : name of charger regulator
 	- subnode <cable> :
 		- cm-cable-name : name of charger cable
-		- cm-cable-extcon : name of extcon dev
+		- extcon : phandles to external connector devices
 (optional)	- cm-cable-min : minimum current of cable
 (optional)	- cm-cable-max : maximum current of cable
 
@@ -28,7 +28,17 @@ Optional properties :
 	-hot : critical hot temperature of battery for charging
 	-temp-diff : temperature difference to allow recharging
  - cm-dis/charging-max = limits of charging duration
-
+ - cm-charge-voltage-max: maximum charge voltage in microVolts
+ - cm-charge-voltage-drop: drop voltage in microVolts to allow recharging
+ - cm-shutdown-voltage: drop voltage in microVolts to allow shutdown
+ - cm-tickle-time-out: when 99% of the time is exceeded, it will be forced to 100%
+ - cm-one-cap-time: how much time to allow capacity change
+ - cm-wdt-interval: the interval to feed charger watchdog
+ - cm-jeita-temp-table: An array providing the temperature in degree Celsius,
+   the recovery temperature in degree Celsius, the corresponding current and
+   the corresponding terminate voltage, which is used to adjust the charging
+   current according to different battery temperature to improve charging
+   efficiency. The current unit is microamp and terminate voltage unit is microvolt.
 Example :
 	charger-manager@0 {
 		compatible = "charger-manager";
@@ -61,18 +71,27 @@ Example :
 		cm-charging-max = <18000000>;
 		/* Allow discharging for 2hr */
 		cm-discharging-max = <7200000>;
+		cm-charge-voltage-max = <6500000>;
+		cm-charge-voltage-drop = <700000>;
+		cm-shutdown-voltage = <3100000>;
+		cm-tickle-time-out = <1500>;
+		cm-one-cap-time = <30>;
+		cm-wdt-interval = <60>;
+		cm-jeita-temp-table = <900 930 0 4200000>, <1000 1030 100000 4200000>,
+			<1100 1130 500000 4350000>, <1450 1420 0x7fff000 4350000>,
+			<1500 1470 700000 4350000>;
 
 		regulator@0 {
 			cm-regulator-name = "chg-reg";
 			cable@0 {
 				cm-cable-name = "USB";
-				cm-cable-extcon = "extcon-dev.0";
+				extcon = <&extcon_usb>;
 				cm-cable-min = <475000>;
 				cm-cable-max = <500000>;
 			};
 			cable@1 {
 				cm-cable-name = "TA";
-				cm-cable-extcon = "extcon-dev.0";
+				extcon = <&extcon_usb>;
 				cm-cable-min = <650000>;
 				cm-cable-max = <675000>;
 			};

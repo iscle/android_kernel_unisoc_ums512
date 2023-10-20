@@ -808,6 +808,8 @@ struct dwc3_scratchpad_array {
  * @phys_ready: flag to indicate that PHYs are ready
  * @ulpi: pointer to ulpi interface
  * @ulpi_ready: flag to indicate that ULPI is initialized
+ * @pam: pointer to PAM which is used to transfer network data,
+ *		it is not a PHY but uses the same structure as PHY.
  * @isoch_delay: wValue from Set Isochronous Delay request;
  * @u2sel: parameter from Set SEL request.
  * @u2pel: parameter from Set SEL request.
@@ -843,6 +845,9 @@ struct dwc3_scratchpad_array {
  * @setup_packet_pending: true when there's a Setup Packet in FIFO. Workaround
  * @three_stage_setup: set if we perform a three phase setup
  * @usb3_lpm_capable: set if hadrware supports Link Power Management
+ * @host_suspend_capable: set if the host supports suspend/resume
+ * @usb3_slow_suspend:  determines if it need an extraordinary delay when
+ *                      suspending xhci.
  * @disable_scramble_quirk: set if we enable the disable scramble quirk
  * @u2exit_lfps_quirk: set if we enable u2exit lfps quirk
  * @u2ss_inp3_quirk: set if we enable P3 OK for U2/SS Inactive quirk
@@ -871,6 +876,9 @@ struct dwc3_scratchpad_array {
  * 	3	- Reserved
  * @imod_interval: set the interrupt moderation interval in 250ns
  *                 increments or 0 to disable.
+ * @u1u2_enable: whether enable the U1/U2 low power mode.
+ *     true    - allow USB3.0 PHY enter U1/U2 mode
+ *     false   - USB3.0 PHY never enter U1/U2 mode
  */
 struct dwc3 {
 	struct work_struct	drd_work;
@@ -894,6 +902,7 @@ struct dwc3 {
 	struct resource		xhci_resources[DWC3_XHCI_RESOURCES_NUM];
 
 	struct dwc3_event_buffer *ev_buf;
+	struct dwc3_event_buffer **ev_bufs_ex;
 	struct dwc3_ep		*eps[DWC3_ENDPOINTS_NUM];
 
 	struct usb_gadget	gadget;
@@ -910,6 +919,8 @@ struct dwc3 {
 	struct ulpi		*ulpi;
 	bool			ulpi_ready;
 
+	struct usb_phy		*pam;
+
 	void __iomem		*regs;
 	size_t			regs_size;
 
@@ -923,6 +934,7 @@ struct dwc3 {
 	u32			fladj;
 	u32			irq_gadget;
 	u32			nr_scratch;
+	u32			num_ev_bufs_ex;
 	u32			u1u2;
 	u32			maximum_speed;
 
@@ -1005,6 +1017,8 @@ struct dwc3 {
 	unsigned		setup_packet_pending:1;
 	unsigned		three_stage_setup:1;
 	unsigned		usb3_lpm_capable:1;
+	unsigned		host_suspend_capable:1;
+	unsigned		usb3_slow_suspend:1;
 
 	unsigned		disable_scramble_quirk:1;
 	unsigned		u2exit_lfps_quirk:1;
@@ -1026,6 +1040,7 @@ struct dwc3 {
 	unsigned		tx_de_emphasis:2;
 
 	u16			imod_interval;
+	bool			u1u2_enable;
 };
 
 #define work_to_dwc(w)		(container_of((w), struct dwc3, drd_work))
@@ -1253,6 +1268,8 @@ static inline void dwc3_drd_exit(struct dwc3 *dwc)
 #if !IS_ENABLED(CONFIG_USB_DWC3_HOST)
 int dwc3_gadget_suspend(struct dwc3 *dwc);
 int dwc3_gadget_resume(struct dwc3 *dwc);
+int dwc3_host_suspend(struct dwc3 *dwc);
+int dwc3_host_resume(struct dwc3 *dwc);
 void dwc3_gadget_process_pending_events(struct dwc3 *dwc);
 #else
 static inline int dwc3_gadget_suspend(struct dwc3 *dwc)

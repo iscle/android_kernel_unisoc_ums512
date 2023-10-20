@@ -34,6 +34,11 @@
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 
+#ifdef CONFIG_TRUSTY
+#include <linux/trusty/smcall.h>
+#include <linux/trusty/trusty.h>
+#endif
+
 /*
  * While a 64-bit OS can make calls with SMC32 calling conventions, for some
  * calls it is necessary to use SMC64 to pass or return 64-bit values.
@@ -56,7 +61,18 @@ static int resident_cpu = -1;
 
 bool psci_tos_resident_on(int cpu)
 {
+#ifdef CONFIG_TRUSTY
+	int ret;
+
+	ret = trusty_fast_call32_power(SMC_FC_CPU_CAN_DOWN, cpu, 0, 0);
+	if (ret < 0) {
+		return true;
+	} else {
+		return false;
+	}
+#else
 	return cpu == resident_cpu;
+#endif
 }
 
 struct psci_operations psci_ops = {
@@ -160,6 +176,14 @@ static int psci_cpu_suspend(u32 state, unsigned long entry_point)
 	int err;
 	u32 fn;
 
+#ifdef CONFIG_TRUSTY
+	u32 cpu_id;
+
+	cpu_id = smp_processor_id();
+	if (psci_tos_resident_on(cpu_id))
+		return -EPERM;
+#endif
+
 	fn = psci_function_id[PSCI_FN_CPU_SUSPEND];
 	err = invoke_psci_fn(fn, state, entry_point, 0);
 	return psci_to_linux_errno(err);
@@ -249,16 +273,6 @@ static int get_set_conduit_method(struct device_node *np)
 		return -EINVAL;
 	}
 	return 0;
-}
-
-static void psci_sys_reset(enum reboot_mode reboot_mode, const char *cmd)
-{
-	invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
-}
-
-static void psci_sys_poweroff(void)
-{
-	invoke_psci_fn(PSCI_0_2_FN_SYSTEM_OFF, 0, 0, 0);
 }
 
 static int __init psci_features(u32 psci_func_id)
@@ -558,10 +572,6 @@ static void __init psci_0_2_set_functions(void)
 	psci_ops.affinity_info = psci_affinity_info;
 
 	psci_ops.migrate_info_type = psci_migrate_info_type;
-
-	arm_pm_restart = psci_sys_reset;
-
-	pm_power_off = psci_sys_poweroff;
 }
 
 /*

@@ -206,6 +206,14 @@ static void pcie_clkpm_cap_init(struct pcie_link_state *link, int blacklist)
 		if (!(reg16 & PCI_EXP_LNKCTL_CLKREQ_EN))
 			enabled = 0;
 	}
+
+	/*
+	 * Unisoc PCIe RC can't support clkpm, so we disabled this function
+	 * regardless of whether an endpoint support it or not.
+	 */
+	capable = 0;
+	enabled = 0;
+
 	link->clkpm_enabled = enabled;
 	link->clkpm_default = enabled;
 	link->clkpm_capable = (blacklist) ? 0 : capable;
@@ -433,7 +441,15 @@ static void pcie_aspm_check_latency(struct pci_dev *endpoint)
 		latency = max_t(u32, link->latency_up.l1, link->latency_dw.l1);
 		if ((link->aspm_capable & ASPM_STATE_L1) &&
 		    (latency + l1_switch_latency > acceptable->l1))
-			link->aspm_capable &= ~ASPM_STATE_L1;
+			/*
+			 * The latency of Unisoc Roc1 PCIe RC3.0 is bigger than
+			 * the latency of Unisoc Orca Pcie EP2.0, so we
+			 * temporarily delete the fillowing code, otherwise the
+			 * ASPM L1 state cannot enter.
+			 * link->aspm_capable &= ~ASPM_STATE_L1;
+			 */
+			dev_err(&endpoint->dev,
+				"L1 latency exceeds the acceptable latency\n");
 		l1_switch_latency += 1000;
 
 		link = link->parent;
@@ -626,6 +642,7 @@ static void pci_clear_and_set_dword(struct pci_dev *pdev, int pos,
 /* Configure the ASPM L1 substates */
 static void pcie_config_aspm_l1ss(struct pcie_link_state *link, u32 state)
 {
+	u16 reg16;
 	u32 val, enable_req;
 	struct pci_dev *child = link->downstream, *parent = link->pdev;
 	u32 up_cap_ptr = link->l1ss.up_cap_ptr;
@@ -679,6 +696,17 @@ static void pcie_config_aspm_l1ss(struct pcie_link_state *link, u32 state)
 					0xE3FF0000, link->l1ss.ctl1);
 		pci_clear_and_set_dword(child, dw_cap_ptr + PCI_L1SS_CTL1,
 					0xE3FF0000, link->l1ss.ctl1);
+
+		/*
+		 * Unisoc PCIe needs to config these registers in order to enter
+		 * ASPM L1.2. Otherwise, PCIe can only enter ASPM L1.1.
+		 */
+		pcie_capability_read_word(parent, PCI_EXP_DEVCTL2, &reg16);
+		reg16 |= PCI_EXP_DEVCTL2_LTR_EN;
+		pcie_capability_write_word(parent, PCI_EXP_DEVCTL2, reg16);
+		pcie_capability_read_word(child, PCI_EXP_DEVCTL2, &reg16);
+		reg16 |= PCI_EXP_DEVCTL2_LTR_EN;
+		pcie_capability_write_word(child, PCI_EXP_DEVCTL2, reg16);
 	}
 
 	val = 0;
@@ -1082,7 +1110,8 @@ void pci_disable_link_state(struct pci_dev *pdev, int state)
 }
 EXPORT_SYMBOL(pci_disable_link_state);
 
-static int pcie_aspm_set_policy(const char *val, struct kernel_param *kp)
+static int pcie_aspm_set_policy(const char *val,
+				const struct kernel_param *kp)
 {
 	int i;
 	struct pcie_link_state *link;
@@ -1109,7 +1138,7 @@ static int pcie_aspm_set_policy(const char *val, struct kernel_param *kp)
 	return 0;
 }
 
-static int pcie_aspm_get_policy(char *buffer, struct kernel_param *kp)
+static int pcie_aspm_get_policy(char *buffer, const struct kernel_param *kp)
 {
 	int i, cnt = 0;
 	for (i = 0; i < ARRAY_SIZE(policy_str); i++)
@@ -1122,6 +1151,37 @@ static int pcie_aspm_get_policy(char *buffer, struct kernel_param *kp)
 
 module_param_call(policy, pcie_aspm_set_policy, pcie_aspm_get_policy,
 	NULL, 0644);
+
+ssize_t sprd_pcie_aspm_set_policy(struct pci_dev *pdev, int val)
+{
+	struct pcie_link_state *link, *root = pdev->link_state->root;
+
+	if (val > ARRAY_SIZE(policy_str) || val < 0) {
+		pr_err("%s: ASPM policy is invalid, please input 0 ~ 3\n",
+		       __func__);
+		return -EINVAL;
+	}
+
+	down_read(&pci_bus_sem);
+	mutex_lock(&aspm_lock);
+	aspm_policy = val;
+	list_for_each_entry(link, &link_list, sibling) {
+		if (link->root != root)
+			continue;
+		pcie_config_aspm_link(link, policy_to_aspm_state(link));
+	}
+	mutex_unlock(&aspm_lock);
+	up_read(&pci_bus_sem);
+
+	return 0;
+}
+
+ssize_t sprd_pcie_aspm_get_policy(struct pci_dev *pdev, int *val)
+{
+	*val = aspm_policy;
+
+	return 0;
+}
 
 #ifdef CONFIG_PCIEASPM_DEBUG
 static ssize_t link_state_show(struct device *dev,

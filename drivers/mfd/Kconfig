@@ -322,6 +322,18 @@ config MFD_DA9150
 	  Additional drivers must be enabled in order to use the specific
 	  features of the device.
 
+config MFD_SC2703
+	tristate "Spreadtrum Communications SC2703 PMIC"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on I2C
+	select MFD_CORE
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	help
+	  This adds support for the SC2703 PMIC. This driver provides
+	  common support for accessing the device. Additional drivers must be
+	  enabled in order to use the specific features of the device.
+
 config MFD_DLN2
 	tristate "Diolan DLN2 support"
 	select MFD_CORE
@@ -1056,6 +1068,22 @@ config MFD_SMSC
 
         To compile this driver as a module, choose M here: the
         module will be called smsc.
+
+config MFD_SC27XX_PMIC
+	tristate "Spreadtrum SC27xx PMICs"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on SPI_MASTER
+	select MFD_CORE
+	select REGMAP_SPI
+	select REGMAP_IRQ
+	help
+	  This enables support for the Spreadtrum SC27xx PMICs with SPI
+	  interface. The SC27xx series PMICs integrate power management,
+	  audio codec, battery management and user interface support
+	  function (such as RTC, Typec, indicator and so on) in a single chip.
+
+	  This driver provides common support for accessing the SC27xx PMICs,
+	  and it also adds the irq_chip parts for handling the PMIC chip events.
 
 config ABX500_CORE
 	bool "ST-Ericsson ABX500 Mixed Signal Circuit register functions"

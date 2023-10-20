@@ -199,11 +199,12 @@ struct pde_opener {
 extern const struct inode_operations proc_link_inode_operations;
 
 extern const struct inode_operations proc_pid_link_inode_operations;
+extern const struct file_operations proc_reclaim_operations;
 
 extern void proc_init_inodecache(void);
 void set_proc_pid_nlink(void);
 extern struct inode *proc_get_inode(struct super_block *, struct proc_dir_entry *);
-extern int proc_fill_super(struct super_block *, void *data, int flags);
+extern int proc_fill_super(struct super_block *);
 extern void proc_entry_rundown(struct proc_dir_entry *);
 
 /*
@@ -249,6 +250,15 @@ static inline void proc_sys_evict_inode(struct  inode *inode,
 #endif
 
 /*
+ * uid.c
+ */
+#ifdef CONFIG_PROC_UID
+extern int proc_uid_init(void);
+#else
+static inline void proc_uid_init(void) { }
+#endif
+
+/*
  * proc_tty.c
  */
 #ifdef CONFIG_TTY
@@ -261,7 +271,6 @@ static inline void proc_tty_init(void) {}
  * root.c
  */
 extern struct proc_dir_entry proc_root;
-extern int proc_parse_options(char *options, struct pid_namespace *pid);
 
 extern void proc_self_init(void);
 extern int proc_remount(struct super_block *, int *, char *);
@@ -280,6 +289,20 @@ struct proc_maps_private {
 #endif
 #ifdef CONFIG_NUMA
 	struct mempolicy *task_mempolicy;
+#endif
+#ifdef CONFIG_ENHANCE_SMAPS_INFO
+	u64 rss;            /* sum of Rss == filecache_rss + anonymous_rss*/
+	u64 pss;            /* sum of Pss == filecache_pss + anonymous_pss*/
+	u64 uss;            /* sum of Uss == filecache_uss + anonymous_uss*/
+	u64 filecache_rss;  /* sum of page_is_file_cache Rss*/
+	u64 anonymous_rss;  /* sum of PageAnon Rss*/
+	u64 filecache_pss;  /* sum of page_is_file_cache Pss */
+	u64 anonymous_pss;  /* sum of PageAnon Pss */
+	u64 filecache_uss;  /* sum of page_is_file_cache Uss */
+	u64 anonymous_uss;  /* sum of PageAnon Uss */
+	u64 swap;           /* sum of Swap for PageAnon */
+	u64 swap_pss;       /* sum of Pswap for PageAnon */
+	u64 swap_uss;       /* sum of Uswap for PageAnon */
 #endif
 } __randomize_layout;
 

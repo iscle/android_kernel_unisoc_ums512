@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/nsproxy.h>
 #include <linux/swap.h>
+#include <linux/inet.h>
 #include <net/snmp.h>
 #include <net/icmp.h>
 #include <net/ip.h>
@@ -47,6 +48,7 @@ static int tcp_syn_retries_min = 1;
 static int tcp_syn_retries_max = MAX_TCP_SYNCNT;
 static int ip_ping_group_range_min[] = { 0, 0 };
 static int ip_ping_group_range_max[] = { GID_T_MAX, GID_T_MAX };
+static char ip_addr_pc[INET_ADDRSTRLEN];
 static int one_day_secs = 24 * 3600;
 
 /* obsolete */
@@ -197,6 +199,21 @@ static int ipv4_ping_group_range(struct ctl_table *table, int write,
 		}
 		set_ping_group_range(table, low, high);
 	}
+
+	return ret;
+}
+
+/* Validate changes from /proc interface. */
+static int proc_tcp_default_init_rwnd(struct ctl_table *ctl, int write,
+				      void __user *buffer,
+				      size_t *lenp, loff_t *ppos)
+{
+	int old_value = *(int *)ctl->data;
+	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+	int new_value = *(int *)ctl->data;
+
+	if (write && ret == 0 && (new_value < 3 || new_value > 100))
+		*(int *)ctl->data = old_value;
 
 	return ret;
 }
@@ -729,6 +746,22 @@ static struct ctl_table ipv4_table[] = {
 		.proc_handler   = proc_tcp_available_ulp,
 	},
 	{
+		.procname	= "tcp_enable_nuke_addr",
+		.data		= &sysctl_tcp_enable_nuke_addr,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname       = "tcp_default_init_rwnd",
+		.data           = &sysctl_tcp_default_init_rwnd,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = proc_tcp_default_init_rwnd
+	},
+	{
 		.procname	= "icmp_msgs_per_sec",
 		.data		= &sysctl_icmp_msgs_per_sec,
 		.maxlen		= sizeof(int),
@@ -1167,6 +1200,13 @@ static struct ctl_table ipv4_net_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
+	},
+	{
+		.procname	= "ip_addr_pc",
+		.data		= ip_addr_pc,
+		.maxlen		= INET_ADDRSTRLEN,
+		.mode		= 0644,
+		.proc_handler	= proc_dostring,
 	},
 	{ }
 };

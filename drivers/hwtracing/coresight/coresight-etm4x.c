@@ -65,6 +65,8 @@ static bool etm4_arch_supported(u8 arch)
 	switch (arch & 0xf0) {
 	case ETM_ARCH_V4:
 		break;
+	case ETM_ARCH_V4_2:
+		break;
 	default:
 		return false;
 	}
@@ -90,6 +92,13 @@ static void etm4_enable_hw(void *info)
 	int i;
 	struct etmv4_drvdata *drvdata = info;
 	struct etmv4_config *config = &drvdata->config;
+
+	/* set cs clock as the max one */
+	if (clk_set_parent(drvdata->clk_cs, drvdata->clk_cs_src))
+		return;
+
+	if (clk_prepare_enable(drvdata->clk_cs))
+		return;
 
 	CS_UNLOCK(drvdata->base);
 
@@ -337,6 +346,9 @@ static void etm4_disable_hw(void *info)
 	writel_relaxed(control, drvdata->base + TRCPRGCTLR);
 
 	CS_LOCK(drvdata->base);
+
+	/* unprepare cs clock */
+	clk_disable_unprepare(drvdata->clk_cs);
 
 	dev_dbg(drvdata->dev, "cpu: %d disable smp call done\n", drvdata->cpu);
 }
@@ -983,6 +995,19 @@ static int etm4_probe(struct amba_device *adev, const struct amba_id *id)
 
 	drvdata->base = base;
 
+	/* get coresight and timestamp clock source */
+	drvdata->clk_cs = devm_clk_get(dev, "clk_cs");
+	if (IS_ERR(drvdata->clk_cs)) {
+		drvdata->clk_cs = NULL;
+		dev_warn(dev, "There is no etm clock.\n");
+	}
+
+	drvdata->clk_cs_src = devm_clk_get(dev, "cs_src");
+	if (IS_ERR(drvdata->clk_cs_src)) {
+		drvdata->clk_cs_src = NULL;
+		dev_warn(dev, "There is no etm source clock.\n");
+	}
+
 	spin_lock_init(&drvdata->spinlock);
 
 	drvdata->cpu = pdata ? pdata->cpu : 0;
@@ -1062,9 +1087,11 @@ err_arch_supported:
 
 static const struct amba_id etm4_ids[] = {
 	ETM4x_AMBA_ID(0x000bb95d),		/* Cortex-A53 */
+	ETM4x_AMBA_ID(0x000bbd05),		/* Cortex-A55 Ananke */
 	ETM4x_AMBA_ID(0x000bb95e),		/* Cortex-A57 */
 	ETM4x_AMBA_ID(0x000bb95a),		/* Cortex-A72 */
 	ETM4x_AMBA_ID(0x000bb959),		/* Cortex-A73 */
+	ETM4x_AMBA_ID(0x000bbd0a),		/* Cortex-A75 Promethus */
 	ETM4x_AMBA_ID(0x000bb9da),		/* Cortex-A35 */
 	{},
 };

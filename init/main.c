@@ -88,12 +88,17 @@
 #include <linux/io.h>
 #include <linux/cache.h>
 #include <linux/rodata_test.h>
-
+#include <linux/pasr.h>
 #include <asm/io.h>
 #include <asm/bugs.h>
 #include <asm/setup.h>
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
+
+//#define CREATE_TRACE_POINTS
+//#include <trace/events/initcall.h>
+
+#include <test/test.h>
 
 static int kernel_init(void *);
 
@@ -539,6 +544,9 @@ asmlinkage __visible void __init start_kernel(void)
 	add_latent_entropy();
 	add_device_randomness(command_line, strlen(command_line));
 	boot_init_stack_canary();
+#ifdef CONFIG_PASR
+	early_pasr_setup();
+#endif
 	mm_init_cpumask(&init_mm);
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
@@ -626,6 +634,10 @@ asmlinkage __visible void __init start_kernel(void)
 	local_irq_enable();
 
 	kmem_cache_init_late();
+
+#ifdef CONFIG_PASR
+	late_pasr_setup();
+#endif
 
 	/*
 	 * HACK ALERT! This is early. We're enabling the console before
@@ -1007,6 +1019,7 @@ static int __ref kernel_init(void *unused)
 
 	rcu_end_inkernel_boot();
 
+	pr_emerg("run init\n");
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
@@ -1072,6 +1085,8 @@ static noinline void __init kernel_init_freeable(void)
 	page_ext_init();
 
 	do_basic_setup();
+
+	test_executor_init();
 
 	/* Open the /dev/console on the rootfs, this should never fail */
 	if (sys_open((const char __user *) "/dev/console", O_RDWR, 0) < 0)

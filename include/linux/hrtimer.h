@@ -338,8 +338,12 @@ extern void hrtimers_resume(void);
 
 DECLARE_PER_CPU(struct tick_device, tick_cpu_device);
 
-
 /* Exported timer functions: */
+#ifdef CONFIG_SPRD_CORE_CTL
+extern void hrtimer_quiesce_cpu(void *cpup);
+#else
+static inline void hrtimer_quiesce_cpu(void *cpup) {}
+#endif
 
 /* Initialize timers: */
 extern void hrtimer_init(struct hrtimer *timer, clockid_t which_clock,
@@ -405,6 +409,7 @@ static inline ktime_t hrtimer_get_remaining(const struct hrtimer *timer)
 }
 
 extern u64 hrtimer_get_next_event(void);
+extern u64 hrtimer_next_event_without(const struct hrtimer *exclude);
 
 extern bool hrtimer_active(const struct hrtimer *timer);
 

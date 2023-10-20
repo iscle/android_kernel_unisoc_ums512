@@ -1069,10 +1069,36 @@ dtb-$(CONFIG_ARCH_ZX) += zx296702-ad1.dtb
 dtb-$(CONFIG_ARCH_ASPEED) += aspeed-bmc-opp-palmetto.dtb \
 	aspeed-bmc-opp-romulus.dtb \
 	aspeed-ast2500-evb.dtb
+
+dtb-$(CONFIG_ARCH_SPRD) += \
+	sp9832e-1h10-gofu.dtb \
+	sp9863a-1h10_go_32b_Natv.dtb \
+	sp7731e-1h10-native.dtb \
+	sp7731e-1h20-native.dtb \
+	ums312-1h10-go.dtb \
+	ums312-2h10-go.dtb
+
+dtbo-$(CONFIG_ARCH_SPRD) += \
+	sp9832e-1h10-gofu-overlay.dtbo \
+	sp9863a-1h10_go_32b_Natv-overlay.dtbo \
+	sp7731e-1h10-overlay.dtbo \
+	sp7731e-1h20-overlay.dtbo \
+	ums312-1h10-go-overlay.dtbo \
+	ums312-2h10-go-overlay.dtbo
 endif
 
 dtstree		:= $(srctree)/$(src)
 dtb-$(CONFIG_OF_ALL_DTBS) := $(patsubst $(dtstree)/%.dts,%.dtb, $(wildcard $(dtstree)/*.dts))
 
-always		:= $(dtb-y)
-clean-files	:= *.dtb
+DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES))
+ifneq ($(DTB_NAMES),)
+DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES)) $(dtbo-y)
+else
+DTB_LIST := $(dtb-y) $(dtbo-y)
+endif
+
+targets += dtbs dtbs_install
+targets += $(DTB_LIST)
+
+always		:= $(DTB_LIST)
+clean-files	:= *.dtb *.dtbo

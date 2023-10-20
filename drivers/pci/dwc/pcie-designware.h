@@ -30,6 +30,20 @@
 #define LINK_WAIT_MAX_IATU_RETRIES	5
 #define LINK_WAIT_IATU			9
 
+/* PCIe Port Logic registers */
+#define PLR_OFFSET			0x700
+
+#define PCIE_PHY_DEBUG_R0		(PLR_OFFSET + 0x28)
+#define LTSSM_STATE_MASK		0x3f
+#define LTSSM_STATE_L0			0x11
+#define LTSSM_STATE_L0S			0x12
+#define LTSSM_STATE_L1_IDLE		0x14
+#define LTSSM_STATE_L2_IDLE		0x15
+
+#define PCIE_PHY_DEBUG_R1		(PLR_OFFSET + 0x2c)
+#define PCIE_PHY_DEBUG_R1_LINK_UP	(0x1 << 4)
+#define PCIE_PHY_DEBUG_R1_LINK_IN_TRAINING	(0x1 << 29)
+
 /* Synopsys-specific PCIe configuration registers */
 #define PCIE_PORT_LINK_CONTROL		0x710
 #define PORT_LINK_MODE_MASK		(0x3f << 16)
@@ -37,6 +51,9 @@
 #define PORT_LINK_MODE_2_LANES		(0x3 << 16)
 #define PORT_LINK_MODE_4_LANES		(0x7 << 16)
 #define PORT_LINK_MODE_8_LANES		(0xf << 16)
+
+#define PCIE_SYMBOL_TIMER_FILTER_1_OFF	0x71c
+#define CX_FLT_MASK_UR_POIS		(0x1 << 17)
 
 #define PCIE_LINK_WIDTH_SPEED_CONTROL	0x80C
 #define PORT_LOGIC_SPEED_CHANGE		(0x1 << 17)
@@ -51,6 +68,8 @@
 #define PCIE_MSI_INTR0_ENABLE		0x828
 #define PCIE_MSI_INTR0_MASK		0x82C
 #define PCIE_MSI_INTR0_STATUS		0x830
+#define PCIE_SLAVE_ERROR_RESPONSE	0x8d0
+#define SLAVE_ERROR_RESPONSE_EN		(0x1 << 0)
 
 #define PCIE_ATU_VIEWPORT		0x900
 #define PCIE_ATU_REGION_INBOUND		(0x1 << 31)
@@ -78,6 +97,12 @@
 #define PCIE_MISC_CONTROL_1_OFF		0x8BC
 #define PCIE_DBI_RO_WR_EN		(0x1 << 0)
 
+/* Although this is synopsys defined register, only spreadtrum pcie need it. */
+#define PCIE_SS_REG_BASE		0xE00
+#define PE0_GEN_CTRL_3			0x58
+#define  LTSSM_EN			(0x1 << 0)
+#define  L1_AUXCLK_EN			(0x1 << 8)
+
 /*
  * iATU Unroll-specific register definitions
  * From 4.80 core version the address translation will be made by unroll
@@ -90,12 +115,33 @@
 #define PCIE_ATU_UNR_LOWER_TARGET	0x14
 #define PCIE_ATU_UNR_UPPER_TARGET	0x18
 
-/* Register address builder */
+/*
+ * Shadow registers (e.g. BAR mask registers) can be accessed
+ * through this register.
+ * If you write 0 to (Base address + 0x8000 + 0x10), then BAR0
+ * can be set to 0.
+ */
+#define PCIE_DBI_CS2 0x8000
+
+/*
+ * Synopsys specific 8 iATU. Though *num_viewport* in dts specific the
+ * numbers of iATU, we had better set the default value to 8.
+ * Now only 3 regions are using, one is for IO, another is for config,
+ * and the other is for MEM. However, the remain 5 iATUs can be used for
+ * MEM.
+ */
+#define PCIE_MEM_VP_NUM    6
+
+/*
+ * Register address builder.
+ * Different vendors may be have different offset address.
+ * The iATU Unroll register offset address is 0x18000 in unisoc SoCs.
+ */
 #define PCIE_GET_ATU_OUTB_UNR_REG_OFFSET(region)	\
-			((0x3 << 20) | ((region) << 9))
+			((0x3 << 15) | ((region) << 9))
 
 #define PCIE_GET_ATU_INB_UNR_REG_OFFSET(region)				\
-			((0x3 << 20) | ((region) << 9) | (0x1 << 8))
+			((0x3 << 15) | ((region) << 9) | (0x1 << 8))
 
 #define MSI_MESSAGE_CONTROL		0x52
 #define MSI_CAP_MMC_SHIFT		1
@@ -105,13 +151,17 @@
 #define MSI_CAP_MME_MASK		(7 << MSI_CAP_MME_SHIFT)
 #define MSI_MESSAGE_ADDR_L32		0x54
 #define MSI_MESSAGE_ADDR_U32		0x58
+#define MSI_MESSAGE_DATA_32		0x58
+#define MSI_MESSAGE_DATA_64		0x5C
 
 /*
  * Maximum number of MSI IRQs can be 256 per controller. But keep
  * it 32 as of now. Probably we will never need more than 32. If needed,
  * then increment it in multiple of 32.
+ * However, unisoc needs more than 32 MSI IRQs: marlin3 needs 32 and
+ * port driver(AER/PME) needs 1 MSI IRQs.
  */
-#define MAX_MSI_IRQS			32
+#define MAX_MSI_IRQS			64
 #define MAX_MSI_CTRLS			(MAX_MSI_IRQS / 32)
 
 struct pcie_port;
@@ -158,12 +208,13 @@ struct pcie_port {
 	resource_size_t		io_base;
 	phys_addr_t		io_bus_addr;
 	u32			io_size;
-	u64			mem_base;
-	phys_addr_t		mem_bus_addr;
-	u32			mem_size;
+	int			mem_ids;
+	u64			mem_base[PCIE_MEM_VP_NUM];
+	phys_addr_t		mem_bus_addr[PCIE_MEM_VP_NUM];
+	u32			mem_size[PCIE_MEM_VP_NUM];
+	struct resource		*mem[PCIE_MEM_VP_NUM];
 	struct resource		*cfg;
 	struct resource		*io;
-	struct resource		*mem;
 	struct resource		*busn;
 	int			irq;
 	const struct dw_pcie_host_ops *ops;
@@ -171,6 +222,9 @@ struct pcie_port {
 	struct irq_domain	*irq_domain;
 	unsigned long		msi_data;
 	DECLARE_BITMAP(msi_irq_in_use, MAX_MSI_IRQS);
+
+	/* SPRD: Add these structs for PCIe EP power on/off */
+	struct pci_host_bridge *bridge;
 };
 
 enum dw_pcie_as_type {
@@ -197,6 +251,8 @@ struct dw_pcie_ep {
 	unsigned long		ob_window_map;
 	u32			num_ib_windows;
 	u32			num_ob_windows;
+	void __iomem		*msi_mem;
+	phys_addr_t		msi_mem_phys;
 };
 
 struct dw_pcie_ops {
@@ -333,10 +389,16 @@ static inline int dw_pcie_host_init(struct pcie_port *pp)
 
 #ifdef CONFIG_PCIE_DW_EP
 void dw_pcie_ep_linkup(struct dw_pcie_ep *ep);
+void dw_pcie_setup_ep(struct dw_pcie_ep *ep);
 int dw_pcie_ep_init(struct dw_pcie_ep *ep);
 void dw_pcie_ep_exit(struct dw_pcie_ep *ep);
+int dw_pcie_ep_raise_msi_irq(struct dw_pcie_ep *ep, u8 interrupt_num);
 #else
 static inline void dw_pcie_ep_linkup(struct dw_pcie_ep *ep)
+{
+}
+
+static inline void dw_pcie_setup_ep(struct dw_pcie_ep *ep)
 {
 }
 
@@ -348,5 +410,12 @@ static inline int dw_pcie_ep_init(struct dw_pcie_ep *ep)
 static inline void dw_pcie_ep_exit(struct dw_pcie_ep *ep)
 {
 }
+
+static inline int dw_pcie_ep_raise_msi_irq(struct dw_pcie_ep *ep,
+					   u8 interrupt_num)
+{
+	return 0;
+}
+
 #endif
 #endif /* _PCIE_DESIGNWARE_H */

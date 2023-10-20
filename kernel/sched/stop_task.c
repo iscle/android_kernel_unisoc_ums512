@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "sched.h"
+#include "walt.h"
 
 /*
  * stop-task scheduling class.
@@ -12,7 +13,8 @@
 
 #ifdef CONFIG_SMP
 static int
-select_task_rq_stop(struct task_struct *p, int cpu, int sd_flag, int flags)
+select_task_rq_stop(struct task_struct *p, int cpu, int sd_flag, int flags,
+		    int sibling_count_hint)
 {
 	return task_cpu(p); /* stop tasks as never migrate */
 }
@@ -43,12 +45,14 @@ static void
 enqueue_task_stop(struct rq *rq, struct task_struct *p, int flags)
 {
 	add_nr_running(rq, 1);
+	walt_inc_cumulative_runnable_avg(rq, p);
 }
 
 static void
 dequeue_task_stop(struct rq *rq, struct task_struct *p, int flags)
 {
 	sub_nr_running(rq, 1);
+	walt_dec_cumulative_runnable_avg(rq, p);
 }
 
 static void yield_task_stop(struct rq *rq)
@@ -60,6 +64,7 @@ static void put_prev_task_stop(struct rq *rq, struct task_struct *prev)
 {
 	struct task_struct *curr = rq->curr;
 	u64 delta_exec;
+	int cpu = cpu_of(rq);
 
 	delta_exec = rq_clock_task(rq) - curr->se.exec_start;
 	if (unlikely((s64)delta_exec < 0))
@@ -69,6 +74,12 @@ static void put_prev_task_stop(struct rq *rq, struct task_struct *prev)
 			max(curr->se.statistics.exec_max, delta_exec));
 
 	curr->se.sum_exec_runtime += delta_exec;
+
+	if (cpumask_test_cpu(cpu, &min_cap_cpu_mask))
+		curr->se.s_sum_exec_runtime += delta_exec;
+	else
+		curr->se.b_sum_exec_runtime += delta_exec;
+
 	account_group_exec_runtime(curr, delta_exec);
 
 	curr->se.exec_start = rq_clock_task(rq);

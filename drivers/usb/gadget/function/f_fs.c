@@ -758,6 +758,7 @@ static void ffs_user_copy_worker(struct work_struct *work)
 					 io_data->req->actual;
 	bool kiocb_has_eventfd = io_data->kiocb->ki_flags & IOCB_EVENTFD;
 
+	io_data->kiocb->private = NULL;
 	if (io_data->read && ret > 0) {
 		mm_segment_t oldfs = get_fs();
 

@@ -126,6 +126,9 @@ static void usb_phy_notify_charger_work(struct work_struct *work)
 
 	switch (usb_phy->chg_state) {
 	case USB_CHARGER_PRESENT:
+		if (usb_phy->chg_type == UNKNOWN_TYPE)
+			usb_phy->chg_type = usb_phy->charger_detect(usb_phy);
+
 		usb_phy_get_charger_current(usb_phy, &min, &max);
 
 		atomic_notifier_call_chain(&usb_phy->notifier, max, usb_phy);
@@ -272,8 +275,8 @@ void usb_phy_get_charger_current(struct usb_phy *usb_phy,
 		*max = usb_phy->chg_cur.aca_max;
 		break;
 	default:
-		*min = 0;
-		*max = 0;
+		*min = usb_phy->chg_cur.sdp_min;
+		*max = usb_phy->chg_cur.sdp_max;
 		break;
 	}
 }
@@ -295,9 +298,7 @@ void usb_phy_set_charger_state(struct usb_phy *usb_phy,
 		return;
 
 	usb_phy->chg_state = state;
-	if (usb_phy->chg_state == USB_CHARGER_PRESENT)
-		usb_phy->chg_type = usb_phy->charger_detect(usb_phy);
-	else
+	if (usb_phy->chg_state != USB_CHARGER_PRESENT)
 		usb_phy->chg_type = UNKNOWN_TYPE;
 
 	schedule_work(&usb_phy->chg_work);
@@ -325,6 +326,14 @@ static int devm_usb_phy_match(struct device *dev, void *res, void *match_data)
 	struct usb_phy **phy = res;
 
 	return *phy == match_data;
+}
+
+static void usb_charger_init(struct usb_phy *usb_phy)
+{
+	usb_phy->chg_type = UNKNOWN_TYPE;
+	usb_phy->chg_state = USB_CHARGER_DEFAULT;
+	usb_phy_set_default_current(usb_phy);
+	INIT_WORK(&usb_phy->chg_work, usb_phy_notify_charger_work);
 }
 
 static int usb_add_extcon(struct usb_phy *x)
@@ -410,10 +419,6 @@ static int usb_add_extcon(struct usb_phy *x)
 		}
 	}
 
-	usb_phy_set_default_current(x);
-	INIT_WORK(&x->chg_work, usb_phy_notify_charger_work);
-	x->chg_type = UNKNOWN_TYPE;
-	x->chg_state = USB_CHARGER_DEFAULT;
 	if (x->type_nb.notifier_call)
 		__usb_phy_get_charger_type(x);
 
@@ -708,6 +713,7 @@ int usb_add_phy(struct usb_phy *x, enum usb_phy_type type)
 		return -EINVAL;
 	}
 
+	usb_charger_init(x);
 	ret = usb_add_extcon(x);
 	if (ret)
 		return ret;
@@ -753,6 +759,7 @@ int usb_add_phy_dev(struct usb_phy *x)
 		return -EINVAL;
 	}
 
+	usb_charger_init(x);
 	ret = usb_add_extcon(x);
 	if (ret)
 		return ret;

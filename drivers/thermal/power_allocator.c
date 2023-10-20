@@ -164,7 +164,7 @@ static void estimate_pid_constants(struct thermal_zone_device *tz,
 			temperature_threshold;
 
 	if (!tz->tzp->k_i || force)
-		tz->tzp->k_i = int_to_frac(10) / 1000;
+		tz->tzp->k_i = int_to_frac(2) / 1000;
 	/*
 	 * The default for k_d and integral_cutoff is 0, so we can
 	 * leave them as they are.
@@ -214,6 +214,8 @@ static u32 pid_controller(struct thermal_zone_device *tz,
 
 	/* Calculate the proportional term */
 	p = mul_frac(err < 0 ? tz->tzp->k_po : tz->tzp->k_pu, err);
+	if ((err >= int_to_frac(2000)) && (params->err_integral < 0))
+		params->err_integral = 0;
 
 	/*
 	 * Calculate the integral term
@@ -534,6 +536,23 @@ static void allow_maximum_power(struct thermal_zone_device *tz)
 		instance->cdev->updated = false;
 		mutex_unlock(&instance->cdev->lock);
 		thermal_cdev_update(instance->cdev);
+		if (instance->cdev->ops->online_everything)
+			instance->cdev->ops->online_everything(instance->cdev);
+	}
+	mutex_unlock(&tz->lock);
+}
+
+static void allow_maximum_freq(struct thermal_zone_device *tz)
+{
+	struct thermal_instance *instance;
+
+	mutex_lock(&tz->lock);
+	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
+		if (!cdev_is_power_actor(instance->cdev))
+			continue;
+
+		if (instance->cdev->ops->update_max_freq)
+			instance->cdev->ops->update_max_freq(instance->cdev, tz);
 	}
 	mutex_unlock(&tz->lock);
 }
@@ -582,6 +601,8 @@ static int power_allocator_bind(struct thermal_zone_device *tz)
 					       control_temp, false);
 	}
 
+	tz->tzp->thm_enable = 1;
+	tz->tzp->reset_done = 0;
 	reset_pid_controller(params);
 
 	tz->governor_data = params;
@@ -621,6 +642,18 @@ static int power_allocator_throttle(struct thermal_zone_device *tz, int trip)
 	 */
 	if (trip != params->trip_max_desired_temperature)
 		return 0;
+
+	allow_maximum_freq(tz);
+	if (!tz->tzp->thm_enable) {
+		if (!tz->tzp->reset_done) {
+			tz->passive = 0;
+			reset_pid_controller(params);
+			allow_maximum_power(tz);
+			tz->tzp->reset_done = 1;
+		}
+		return 0;
+	} else
+		tz->tzp->reset_done = 0;
 
 	ret = tz->ops->get_trip_temp(tz, params->trip_switch_on,
 				     &switch_on_temp);

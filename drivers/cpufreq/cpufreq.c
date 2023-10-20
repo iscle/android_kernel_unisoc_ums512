@@ -19,12 +19,14 @@
 
 #include <linux/cpu.h>
 #include <linux/cpufreq.h>
+#include <linux/cpufreq_times.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/kernel_stat.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/pm_qos.h>
 #include <linux/slab.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
@@ -125,6 +127,15 @@ struct kobject *get_governor_parent_kobj(struct cpufreq_policy *policy)
 		return cpufreq_global_kobject;
 }
 EXPORT_SYMBOL_GPL(get_governor_parent_kobj);
+
+struct cpufreq_frequency_table *cpufreq_frequency_get_table(unsigned int cpu)
+{
+	struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
+
+	return policy && !policy_is_inactive(policy) ?
+		policy->freq_table : NULL;
+}
+EXPORT_SYMBOL_GPL(cpufreq_frequency_get_table);
 
 static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
 {
@@ -339,6 +350,7 @@ static void __cpufreq_notify_transition(struct cpufreq_policy *policy,
 			 (unsigned long)freqs->new, (unsigned long)freqs->cpu);
 		trace_cpu_frequency(freqs->new, freqs->cpu);
 		cpufreq_stats_record_transition(policy, freqs->new);
+		cpufreq_times_record_transition(policy, freqs->new);
 		srcu_notifier_call_chain(&cpufreq_transition_notifier_list,
 				CPUFREQ_POSTCHANGE, freqs);
 		if (likely(policy) && likely(policy->cpu == freqs->cpu))
@@ -657,7 +669,7 @@ show_one(cpuinfo_max_freq, cpuinfo.max_freq);
 show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
-
+show_one(scaling_fix_freq, fix);
 __weak unsigned int arch_freq_get_on_cpu(int cpu)
 {
 	return 0;
@@ -710,6 +722,37 @@ static ssize_t store_##file_name					\
 
 store_one(scaling_min_freq, min);
 store_one(scaling_max_freq, max);
+
+static ssize_t store_scaling_fix_freq(struct cpufreq_policy *policy,
+					const char *buf, size_t count)
+{
+	unsigned int fix_freq = 0;
+	unsigned int ret;
+
+	ret = sscanf(buf, "%u", &fix_freq);
+	if (ret != 1)
+		return -EINVAL;
+
+	if (fix_freq != 0) {
+		struct cpufreq_frequency_table *table = policy->freq_table;
+		struct cpufreq_frequency_table *pos;
+		unsigned int freq = 0;
+		if (fix_freq > policy->cpuinfo.max_freq || fix_freq < policy->cpuinfo.min_freq)
+			return -EINVAL;
+		cpufreq_for_each_valid_entry(pos, table) {
+			freq = pos->frequency;
+			if (freq == fix_freq)
+				break;
+		}
+		if (freq != fix_freq)
+			return -EINVAL;
+	}
+	policy->fix = fix_freq;
+	smp_wmb();
+	 __cpufreq_driver_target(policy, policy->target_freq, CPUFREQ_RELATION_F);
+
+	return count;
+}
 
 /**
  * show_cpuinfo_cur_freq - current CPU frequency as detected by hardware
@@ -884,6 +927,7 @@ cpufreq_freq_attr_ro(related_cpus);
 cpufreq_freq_attr_ro(affected_cpus);
 cpufreq_freq_attr_rw(scaling_min_freq);
 cpufreq_freq_attr_rw(scaling_max_freq);
+cpufreq_freq_attr_rw(scaling_fix_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
 
@@ -893,6 +937,7 @@ static struct attribute *default_attrs[] = {
 	&cpuinfo_transition_latency.attr,
 	&scaling_min_freq.attr,
 	&scaling_max_freq.attr,
+	&scaling_fix_freq.attr,
 	&affected_cpus.attr,
 	&related_cpus.attr,
 	&scaling_governor.attr,
@@ -1079,6 +1124,64 @@ static void handle_update(struct work_struct *work)
 	cpufreq_update_policy(cpu);
 }
 
+static int pm_qos_clusterx_freq_handler(struct notifier_block *nb,
+		unsigned long val, void *v)
+{
+	struct cpufreq_policy *policy = container_of(nb, struct cpufreq_policy, pm_qos_freq_nb);
+	int ret = -1;
+
+	if (down_write_trylock(&policy->rwsem)) {
+		if (!policy_is_inactive(policy))
+			ret = __cpufreq_driver_target(policy, policy->target_freq, CPUFREQ_RELATION_L);
+		up_write(&policy->rwsem);
+	}
+
+	return ret;
+}
+
+static void pm_qos_clusterx_freq_init(struct cpufreq_policy *policy)
+{
+	int cluster_id = topology_physical_package_id(policy->cpu);
+
+	switch (cluster_id) {
+	case CPU_CLUSTER0:
+		policy->pm_qos_freq_nb = (struct notifier_block){
+			.notifier_call = pm_qos_clusterx_freq_handler,
+		};
+		pm_qos_add_notifier(PM_QOS_CLUSTER0_FREQ_MAX, &policy->pm_qos_freq_nb);
+		pm_qos_add_notifier(PM_QOS_CLUSTER0_FREQ_MIN, &policy->pm_qos_freq_nb);
+		break;
+	case CPU_CLUSTER1:
+		policy->pm_qos_freq_nb = (struct notifier_block){
+			.notifier_call = pm_qos_clusterx_freq_handler,
+		};
+		pm_qos_add_notifier(PM_QOS_CLUSTER1_FREQ_MAX, &policy->pm_qos_freq_nb);
+		pm_qos_add_notifier(PM_QOS_CLUSTER1_FREQ_MIN, &policy->pm_qos_freq_nb);
+		break;
+	default:
+		pr_warn("more cluster id is not support yet!\n");
+		break;
+	}
+}
+
+static void pm_qos_clusterx_freq_exit(struct cpufreq_policy *policy)
+{
+	int cluster_id = topology_physical_package_id(policy->cpu);
+
+	switch (cluster_id) {
+	case CPU_CLUSTER0:
+		pm_qos_remove_notifier(PM_QOS_CLUSTER0_FREQ_MAX, &policy->pm_qos_freq_nb);
+		pm_qos_remove_notifier(PM_QOS_CLUSTER0_FREQ_MIN, &policy->pm_qos_freq_nb);
+		break;
+	case CPU_CLUSTER1:
+		pm_qos_remove_notifier(PM_QOS_CLUSTER1_FREQ_MAX, &policy->pm_qos_freq_nb);
+		pm_qos_remove_notifier(PM_QOS_CLUSTER1_FREQ_MIN, &policy->pm_qos_freq_nb);
+		break;
+	default:
+		pr_warn("more cluster id is not support yet!\n");
+		break;
+	};
+}
 static struct cpufreq_policy *cpufreq_policy_alloc(unsigned int cpu)
 {
 	struct cpufreq_policy *policy;
@@ -1113,6 +1216,7 @@ static struct cpufreq_policy *cpufreq_policy_alloc(unsigned int cpu)
 	INIT_WORK(&policy->update, handle_update);
 
 	policy->cpu = cpu;
+
 	return policy;
 
 err_free_real_cpus:
@@ -1209,6 +1313,7 @@ static int cpufreq_online(unsigned int cpu)
 		pr_debug("initialization failed\n");
 		goto out_free_policy;
 	}
+	pm_qos_clusterx_freq_init(policy);
 
 	down_write(&policy->rwsem);
 
@@ -1290,6 +1395,7 @@ static int cpufreq_online(unsigned int cpu)
 			goto out_exit_policy;
 
 		cpufreq_stats_create_table(policy);
+		cpufreq_times_create_policy(policy);
 
 		write_lock_irqsave(&cpufreq_driver_lock, flags);
 		list_add(&policy->policy_list, &cpufreq_policy_list);
@@ -1383,6 +1489,7 @@ static int cpufreq_offline(unsigned int cpu)
 				CPUFREQ_NAME_LEN);
 		else
 			policy->last_policy = policy->policy;
+		pm_qos_clusterx_freq_exit(policy);
 	} else if (cpu == policy->cpu) {
 		/* Nominate new CPU */
 		policy->cpu = cpumask_any(policy->cpus);
@@ -1519,6 +1626,21 @@ unsigned int cpufreq_quick_get_max(unsigned int cpu)
 	return ret_freq;
 }
 EXPORT_SYMBOL(cpufreq_quick_get_max);
+
+unsigned int cpufreq_quick_get_target(unsigned int cpu)
+{
+	struct cpufreq_policy *policy;
+	unsigned int ret_freq = 0;
+
+	policy = cpufreq_cpu_get(cpu);
+	if (policy) {
+		ret_freq = policy->target_freq;
+		cpufreq_cpu_put(policy);
+	}
+
+	return ret_freq;
+}
+EXPORT_SYMBOL(cpufreq_quick_get_target);
 
 static unsigned int __cpufreq_get(struct cpufreq_policy *policy)
 {
@@ -1850,9 +1972,14 @@ EXPORT_SYMBOL(cpufreq_unregister_notifier);
 unsigned int cpufreq_driver_fast_switch(struct cpufreq_policy *policy,
 					unsigned int target_freq)
 {
+	int ret;
 	target_freq = clamp_val(target_freq, policy->min, policy->max);
 
-	return cpufreq_driver->fast_switch(policy, target_freq);
+        ret = cpufreq_driver->fast_switch(policy, target_freq);
+	if (ret)
+		cpufreq_times_record_transition(policy, ret);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(cpufreq_driver_fast_switch);
 
@@ -1945,16 +2072,38 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
 {
 	unsigned int old_target_freq = target_freq;
 	int index;
+	unsigned int qos_max_freq = PM_QOS_FREQ_MAX_DEFAULT_VALUE;
+	unsigned int qos_min_freq = PM_QOS_FREQ_MIN_DEFAULT_VALUE;
+	unsigned int cluster_id;
+
+	policy->target_freq = target_freq;
 
 	if (cpufreq_disabled())
 		return -ENODEV;
+	if (unlikely(policy->fix)) {
+		target_freq = policy->fix;
+		relation = CPUFREQ_RELATION_F;
+		pr_warn("target for CPU %u is fixed to %u kHz, only be used for test!\n",
+			policy->cpu, target_freq);
+	} else {
+		/* Make sure that target freq is within qos request range */
+		cluster_id = topology_physical_package_id(policy->cpu);
+		if (CPU_CLUSTER0 == cluster_id) {
+			qos_max_freq = pm_qos_request(PM_QOS_CLUSTER0_FREQ_MAX);
+			qos_min_freq = pm_qos_request(PM_QOS_CLUSTER0_FREQ_MIN);
+		} else if (CPU_CLUSTER1 == cluster_id) {
+			qos_max_freq = pm_qos_request(PM_QOS_CLUSTER1_FREQ_MAX);
+			qos_min_freq = pm_qos_request(PM_QOS_CLUSTER1_FREQ_MIN);
+		} else
+			pr_warn("more cluster id is not support yet!\n");
+		target_freq = clamp_val(target_freq, qos_min_freq, qos_max_freq);
 
-	/* Make sure that target_freq is within supported range */
-	target_freq = clamp_val(target_freq, policy->min, policy->max);
+		/* Make sure that target_freq is within supported range */
+		target_freq = clamp_val(target_freq, policy->min, policy->max);
 
-	pr_debug("target for CPU %u: %u kHz, relation %u, requested %u kHz\n",
-		 policy->cpu, target_freq, relation, old_target_freq);
-
+		pr_debug("target for CPU %u: %u kHz, relation %u, requested %u kHz\n",
+			 policy->cpu, target_freq, relation, old_target_freq);
+	}
 	/*
 	 * This might look like a redundant call as we are checking it again
 	 * after finding index. But it is left intentionally for cases where
@@ -1987,7 +2136,8 @@ int cpufreq_driver_target(struct cpufreq_policy *policy,
 
 	down_write(&policy->rwsem);
 
-	ret = __cpufreq_driver_target(policy, target_freq, relation);
+	if (!policy_is_inactive(policy))
+		ret = __cpufreq_driver_target(policy, target_freq, relation);
 
 	up_write(&policy->rwsem);
 
@@ -2232,6 +2382,10 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	policy->min = new_policy->min;
 	policy->max = new_policy->max;
 
+	arch_set_max_freq_scale(policy->cpus, policy->max);
+
+	trace_cpu_frequency_limits(policy->max, policy->min, policy->cpu);
+
 	policy->cached_target_freq = UINT_MAX;
 
 	pr_debug("new min and max freqs are %u - %u kHz\n",
@@ -2428,6 +2582,23 @@ int cpufreq_boost_enabled(void)
 	return cpufreq_driver->boost_enabled;
 }
 EXPORT_SYMBOL_GPL(cpufreq_boost_enabled);
+
+/*********************************************************************
+ *               FREQUENCY INVARIANT ACCOUNTING SUPPORT              *
+ *********************************************************************/
+
+__weak void arch_set_freq_scale(struct cpumask *cpus,
+				unsigned long cur_freq,
+				unsigned long max_freq)
+{
+}
+EXPORT_SYMBOL_GPL(arch_set_freq_scale);
+
+__weak void arch_set_max_freq_scale(struct cpumask *cpus,
+				    unsigned long policy_max_freq)
+{
+}
+EXPORT_SYMBOL_GPL(arch_set_max_freq_scale);
 
 /*********************************************************************
  *               REGISTER / UNREGISTER CPUFREQ DRIVER                *

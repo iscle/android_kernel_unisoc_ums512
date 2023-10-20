@@ -193,6 +193,7 @@
 #define MUSB_RXCSR_DATAERROR		0x0008
 #define MUSB_RXCSR_FIFOFULL		0x0002
 #define MUSB_RXCSR_RXPKTRDY		0x0001
+#define MUSB_FIFO_TIMEOUT		0x01
 
 /* RXCSR in Peripheral mode */
 #define MUSB_RXCSR_P_ISO		0x4000
@@ -270,6 +271,9 @@
 #define MUSB_FS_EOF1		0x7d	/* 8 bit */
 #define MUSB_LS_EOF1		0x7e	/* 8 bit */
 
+#define MUSB_RX_DPKTBUFDIS	0x340	/* 16 bit */
+#define MUSB_TX_DPKTBUFDIS	0x342	/* 16 bit */
+
 /* Offsets to endpoint registers */
 #define MUSB_TXMAXP		0x00
 #define MUSB_TXCSR		0x02
@@ -286,6 +290,9 @@
 #define MUSB_RXINTERVAL		0x0D
 #define MUSB_FIFOSIZE		0x0F
 #define MUSB_CONFIGDATA		MUSB_FIFOSIZE	/* Re-used for EP0 */
+#define MUSB_OTG_EXT_CSR	0x34b
+#define MUSB_OTG_FIFO_CHECK	0x349
+#define MUSB_OTG_RXPKTCNT(n)	(0x300 + 0x4 * n)
 
 #include "tusb6010.h"		/* Needed "only" for TUSB_EP0_CONF */
 
@@ -299,6 +306,10 @@
 #define MUSB_RXFUNCADDR		0x04
 #define MUSB_RXHUBADDR		0x06
 #define MUSB_RXHUBPORT		0x07
+#define MUSB_HOST_FORCE_EN	0x01
+#define MUSB_CLEAR_TXBUFF	0x10
+#define MUSB_CLEAR_RXBUFF	0x20
+#define MUSB_TX_CMPL_MODE	0x40
 
 static inline void musb_write_txfifosz(void __iomem *mbase, u8 c_size)
 {

@@ -80,7 +80,8 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
 		}
 
 		dst = __xfrm_dst_lookup(net, 0, 0, saddr, daddr,
-					x->props.family, x->props.output_mark);
+					x->props.family,
+					xfrm_smark_get(0, x));
 		if (IS_ERR(dst))
 			return 0;
 
@@ -155,7 +156,6 @@ static int xfrm_dev_register(struct net_device *dev)
 
 static int xfrm_dev_unregister(struct net_device *dev)
 {
-	xfrm_policy_cache_flush();
 	return NOTIFY_DONE;
 }
 
@@ -178,7 +178,7 @@ static int xfrm_dev_down(struct net_device *dev)
 	if (dev->features & NETIF_F_HW_ESP)
 		xfrm_dev_state_flush(dev_net(dev), dev, true);
 
-	xfrm_policy_cache_flush();
+	xfrm_garbage_collect(dev_net(dev));
 	return NOTIFY_DONE;
 }
 

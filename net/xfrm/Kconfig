@@ -25,6 +25,14 @@ config XFRM_USER
 
 	  If unsure, say Y.
 
+config XFRM_INTERFACE
+	tristate "Transformation virtual interface"
+	depends on XFRM && IPV6
+	---help---
+	  This provides a virtual interface to route IPsec traffic.
+
+	  If unsure, say N.
+
 config XFRM_SUB_POLICY
 	bool "Transformation sub policy support"
 	depends on XFRM
@@ -33,6 +41,16 @@ config XFRM_SUB_POLICY
 	  one, two policies can be applied to the same packet at once.
 	  Policy which lives shorter time in kernel should be a sub.
 
+	  If unsure, say N.
+
+config XFRM_FRAGMENT
+	bool "Fragment pkts to avoiding pkts done in ip layer"
+	depends on XFRM_SUB_POLICY
+	default n
+	---help---
+	  Support pkt fragment in ip layer before esp. By using this one,
+	  control parameter will be set to one. It is only for sprd until
+	  now.
 	  If unsure, say N.
 
 config XFRM_MIGRATE

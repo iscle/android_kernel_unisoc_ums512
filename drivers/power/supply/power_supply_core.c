@@ -20,6 +20,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/power_supply.h>
+#include <linux/property.h>
 #include <linux/thermal.h>
 #include "power_supply.h"
 
@@ -567,9 +568,13 @@ EXPORT_SYMBOL_GPL(devm_power_supply_get_by_phandle);
 int power_supply_get_battery_info(struct power_supply *psy,
 				  struct power_supply_battery_info *info)
 {
+	struct power_supply_vol_temp_table *temp_table;
+	struct power_supply_capacity_temp_table *cap_table;
+	struct power_supply_resistance_temp_table *resistance_table;
 	struct device_node *battery_np;
 	const char *value;
-	int err;
+	const __be32 *list;
+	int err, len, index, size;
 
 	info->energy_full_design_uwh         = -EINVAL;
 	info->charge_full_design_uah         = -EINVAL;
@@ -578,6 +583,27 @@ int power_supply_get_battery_info(struct power_supply *psy,
 	info->charge_term_current_ua         = -EINVAL;
 	info->constant_charge_current_max_ua = -EINVAL;
 	info->constant_charge_voltage_max_uv = -EINVAL;
+	info->factory_internal_resistance_uohm  = -EINVAL;
+	info->temp_table = NULL;
+	info->cap_table = NULL;
+	info->resistance_table = NULL;
+	info->temp_table_size = -EINVAL;
+	info->cur.sdp_cur = -EINVAL;
+	info->cur.sdp_limit = -EINVAL;
+	info->cur.dcp_cur = -EINVAL;
+	info->cur.dcp_limit = -EINVAL;
+	info->cur.cdp_cur = -EINVAL;
+	info->cur.cdp_limit = -EINVAL;
+	info->cur.aca_cur = -EINVAL;
+	info->cur.aca_limit = -EINVAL;
+	info->cur.unknown_cur = -EINVAL;
+	info->cur.unknown_limit = -EINVAL;
+
+	for (index = 0; index < POWER_SUPPLY_OCV_TEMP_MAX; index++) {
+		info->ocv_table[index]       = NULL;
+		info->ocv_temp[index]        = -EINVAL;
+		info->ocv_table_size[index]  = -EINVAL;
+	}
 
 	if (!psy->of_node) {
 		dev_warn(&psy->dev, "%s currently only supports devicetree\n",
@@ -615,10 +641,217 @@ int power_supply_get_battery_info(struct power_supply *psy,
 			     &info->constant_charge_current_max_ua);
 	of_property_read_u32(battery_np, "constant_charge_voltage_max_microvolt",
 			     &info->constant_charge_voltage_max_uv);
+	of_property_read_u32(battery_np, "factory-internal-resistance-micro-ohms",
+			     &info->factory_internal_resistance_uohm);
+	of_property_read_u32_index(battery_np, "charge-sdp-current-microamp", 0,
+				   &info->cur.sdp_cur);
+	of_property_read_u32_index(battery_np, "charge-sdp-current-microamp", 1,
+				   &info->cur.sdp_limit);
+	of_property_read_u32_index(battery_np, "charge-dcp-current-microamp", 0,
+				   &info->cur.dcp_cur);
+	of_property_read_u32_index(battery_np, "charge-dcp-current-microamp", 1,
+				   &info->cur.dcp_limit);
+	of_property_read_u32_index(battery_np, "charge-cdp-current-microamp", 0,
+				   &info->cur.cdp_cur);
+	of_property_read_u32_index(battery_np, "charge-cdp-current-microamp", 1,
+				   &info->cur.cdp_limit);
+	of_property_read_u32_index(battery_np, "charge-aca-current-microamp", 0,
+				   &info->cur.aca_cur);
+	of_property_read_u32_index(battery_np, "charge-aca-current-microamp", 1,
+				   &info->cur.aca_limit);
+	of_property_read_u32_index(battery_np, "charge-unknown-current-microamp", 0,
+				   &info->cur.unknown_cur);
+	of_property_read_u32_index(battery_np, "charge-unknown-current-microamp", 1,
+				   &info->cur.unknown_limit);
+	of_property_read_u32_index(battery_np, "charge-fchg-current-microamp", 0,
+				   &info->cur.fchg_cur);
+	of_property_read_u32_index(battery_np, "charge-fchg-current-microamp", 1,
+				   &info->cur.fchg_limit);
+
+	len = of_property_count_u32_elems(battery_np, "ocv-capacity-celsius");
+	if (len < 0 && len != -EINVAL) {
+		return len;
+	} else if (len > POWER_SUPPLY_OCV_TEMP_MAX) {
+		dev_err(&psy->dev, "Too many temperature values\n");
+		return -EINVAL;
+	} else if (len > 0) {
+		of_property_read_u32_array(battery_np, "ocv-capacity-celsius",
+					   info->ocv_temp, len);
+	}
+
+	for (index = 0; index < len; index++) {
+		struct power_supply_battery_ocv_table *table;
+		char *propname;
+		const __be32 *list;
+		int i, tab_len, size;
+
+		propname = kasprintf(GFP_KERNEL, "ocv-capacity-table-%d", index);
+		list = of_get_property(battery_np, propname, &size);
+		if (!list || !size) {
+			dev_err(&psy->dev, "failed to get %s\n", propname);
+			kfree(propname);
+			power_supply_put_battery_info(psy, info);
+			return -EINVAL;
+		}
+
+		kfree(propname);
+		tab_len = size / (2 * sizeof(__be32));
+		info->ocv_table_size[index] = tab_len;
+
+		table = info->ocv_table[index] =
+			devm_kzalloc(&psy->dev, tab_len * sizeof(*table),
+				     GFP_KERNEL);
+		if (!info->ocv_table[index]) {
+			power_supply_put_battery_info(psy, info);
+			return -ENOMEM;
+		}
+
+		for (i = 0; i < tab_len; i++) {
+			table[i].ocv = be32_to_cpu(*list++);
+			table[i].capacity = be32_to_cpu(*list++);
+		}
+	}
+
+	list = of_get_property(battery_np, "voltage-temp-table", &size);
+	if (!list || !size)
+		return 0;
+
+	info->temp_table_size = size / (2 * sizeof(__be32));
+	temp_table = info->temp_table = devm_kcalloc(&psy->dev,
+						     info->temp_table_size,
+						     sizeof(*temp_table),
+						     GFP_KERNEL);
+	if (!info->temp_table) {
+		power_supply_put_battery_info(psy, info);
+		return -ENOMEM;
+	}
+
+	for (index = 0; index < info->temp_table_size; index++) {
+		temp_table[index].vol = be32_to_cpu(*list++);
+		temp_table[index].temp = be32_to_cpu(*list++);
+	}
+
+	list = of_get_property(battery_np, "capacity-temp-table", &size);
+	if (!list || !size)
+		return 0;
+
+	info->cap_table_size = size / (2 * sizeof(__be32));
+	cap_table = info->cap_table = devm_kcalloc(&psy->dev,
+						   info->cap_table_size,
+						   sizeof(*cap_table),
+						   GFP_KERNEL);
+	if (!info->cap_table) {
+		power_supply_put_battery_info(psy, info);
+		return -ENOMEM;
+	}
+
+	for (index = 0; index < info->cap_table_size; index++) {
+		cap_table[index].temp = be32_to_cpu(*list++);
+		cap_table[index].cap = be32_to_cpu(*list++);
+	}
+
+	list = of_get_property(battery_np, "resistance-temp-table", &size);
+	if (!list || !size)
+		return 0;
+
+	info->resistance_table_size = size / (2 * sizeof(__be32));
+	resistance_table = info->resistance_table = devm_kcalloc(&psy->dev,
+								 info->resistance_table_size,
+								 sizeof(*resistance_table),
+								 GFP_KERNEL);
+	if (!info->resistance_table) {
+		power_supply_put_battery_info(psy, info);
+		return -ENOMEM;
+	}
+
+	for (index = 0; index < info->resistance_table_size; index++) {
+		resistance_table[index].temp = be32_to_cpu(*list++);
+		resistance_table[index].resistance = be32_to_cpu(*list++);
+	}
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(power_supply_get_battery_info);
+
+void power_supply_put_battery_info(struct power_supply *psy,
+				   struct power_supply_battery_info *info)
+{
+	int i;
+
+	for (i = 0; i < POWER_SUPPLY_OCV_TEMP_MAX; i++) {
+		if (info->ocv_table[i])
+			devm_kfree(&psy->dev, info->ocv_table[i]);
+	}
+
+	if (info->temp_table)
+		devm_kfree(&psy->dev, info->temp_table);
+	if (info->cap_table)
+		devm_kfree(&psy->dev, info->cap_table);
+	if (info->resistance_table)
+		devm_kfree(&psy->dev, info->resistance_table);
+}
+EXPORT_SYMBOL_GPL(power_supply_put_battery_info);
+
+int power_supply_ocv2cap_simple(struct power_supply_battery_ocv_table *table,
+				int table_len, int ocv)
+{
+	int i, cap, tmp;
+
+	for (i = 0; i < table_len; i++)
+		if (ocv > table[i].ocv)
+			break;
+
+	if (i > 0 && i < table_len) {
+		tmp = (table[i - 1].capacity - table[i].capacity) *
+			(ocv - table[i].ocv);
+		tmp /= table[i - 1].ocv - table[i].ocv;
+		cap = tmp + table[i].capacity;
+	} else if (i == 0) {
+		cap = table[0].capacity;
+	} else {
+		cap = table[table_len - 1].capacity;
+	}
+
+	return cap;
+}
+EXPORT_SYMBOL_GPL(power_supply_ocv2cap_simple);
+
+struct power_supply_battery_ocv_table *
+power_supply_find_ocv2cap_table(struct power_supply_battery_info *info,
+				int temp, int *table_len)
+{
+	int best_temp_diff = INT_MAX, best_index = 0, temp_diff, i;
+
+	if (!info->ocv_table[0])
+		return NULL;
+
+	for (i = 0; i < POWER_SUPPLY_OCV_TEMP_MAX; i++) {
+		temp_diff = abs(info->ocv_temp[i] - temp);
+
+		if (temp_diff < best_temp_diff) {
+			best_temp_diff = temp_diff;
+			best_index = i;
+		}
+	}
+
+	*table_len = info->ocv_table_size[best_index];
+	return info->ocv_table[best_index];
+}
+EXPORT_SYMBOL_GPL(power_supply_find_ocv2cap_table);
+
+int power_supply_batinfo_ocv2cap(struct power_supply_battery_info *info,
+				 int ocv, int temp)
+{
+	struct power_supply_battery_ocv_table *table;
+	int table_len;
+
+	table = power_supply_find_ocv2cap_table(info, temp, &table_len);
+	if (!table)
+		return -EINVAL;
+
+	return power_supply_ocv2cap_simple(table, table_len, ocv);
+}
+EXPORT_SYMBOL_GPL(power_supply_batinfo_ocv2cap);
 
 int power_supply_get_property(struct power_supply *psy,
 			    enum power_supply_property psp,
@@ -849,11 +1082,23 @@ __power_supply_register(struct device *parent,
 {
 	struct device *dev;
 	struct power_supply *psy;
-	int rc;
+	int i, rc;
 
 	if (!parent)
 		pr_warn("%s: Expected proper parent device for '%s'\n",
 			__func__, desc->name);
+
+	if (!desc || !desc->name || !desc->properties || !desc->num_properties)
+		return ERR_PTR(-EINVAL);
+
+	for (i = 0; i < desc->num_properties; ++i) {
+		if ((desc->properties[i] == POWER_SUPPLY_PROP_USB_TYPE) &&
+		    (!desc->usb_types || !desc->num_usb_types))
+			return ERR_PTR(-EINVAL);
+	}
+
+	if (!desc || !desc->name || !desc->properties || !desc->num_properties)
+		return ERR_PTR(-EINVAL);
 
 	psy = kzalloc(sizeof(*psy), GFP_KERNEL);
 	if (!psy)
@@ -871,7 +1116,8 @@ __power_supply_register(struct device *parent,
 	psy->desc = desc;
 	if (cfg) {
 		psy->drv_data = cfg->drv_data;
-		psy->of_node = cfg->of_node;
+		psy->of_node =
+			cfg->fwnode ? to_of_node(cfg->fwnode) : cfg->of_node;
 		psy->supplied_to = cfg->supplied_to;
 		psy->num_supplicants = cfg->num_supplicants;
 	}

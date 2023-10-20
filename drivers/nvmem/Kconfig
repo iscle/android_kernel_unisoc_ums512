@@ -144,4 +144,37 @@ config MESON_EFUSE
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem_meson_efuse.
 
+config SPRD_EFUSE
+	tristate "Spreadtrum normal eFuse Support"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  This is a simple driver to dump specified values of Spreadtrum
+	  SoC from normal eFuse.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called nvmem_sprd_efuse.
+
+config SPRD_CACHE_EFUSE
+	tristate "Spreadtrum normal cache eFuse Support"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  This is a simple driver to dump specified values of Spreadtrum
+	  SoC from normal eFuse.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called nvmem_sprd_cache_efuse.
+
+config SC27XX_EFUSE
+	tristate "Spreadtrum SC27XX eFuse Support"
+	depends on MFD_SC27XX_PMIC || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  This is a simple driver to dump specified values of Spreadtrum
+	  SC27XX PMICs from eFuse.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called nvmem-sc27xx-efuse.
+
 endif

@@ -21,6 +21,7 @@
 #include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
@@ -31,8 +32,12 @@
 #include <trace/events/power.h>
 #include <linux/compiler.h>
 #include <linux/moduleparam.h>
+#include <linux/wakeup_reason.h>
 
 #include "power.h"
+
+#define DEEP_SLEEP_RETRY_DIRTY_WRITEBACK_THRESHOLD     128     /* 128kB */
+#define DEEP_SLEEP_RETRY_TRIGGER_SYNC_QUEUE_THRESHOLD  2048    /* 2048kB */
 
 const char * const pm_labels[] = {
 	[PM_SUSPEND_TO_IDLE] = "freeze",
@@ -61,6 +66,10 @@ static DECLARE_WAIT_QUEUE_HEAD(s2idle_wait_head);
 
 enum s2idle_states __read_mostly s2idle_state;
 static DEFINE_RAW_SPINLOCK(s2idle_lock);
+
+static struct workqueue_struct *suspend_sys_sync_work_queue;
+static int sync_start;
+static DEFINE_SPINLOCK(suspend_sys_sync_lock);
 
 void s2idle_set_ops(const struct platform_s2idle_ops *ops)
 {
@@ -389,7 +398,8 @@ void __weak arch_suspend_enable_irqs(void)
  */
 static int suspend_enter(suspend_state_t state, bool *wakeup)
 {
-	int error;
+	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
+	int error, last_dev;
 
 	error = platform_suspend_prepare(state);
 	if (error)
@@ -397,7 +407,11 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 
 	error = dpm_suspend_late(PMSG_SUSPEND);
 	if (error) {
+		last_dev = suspend_stats.last_failed_dev + REC_FAILED_NUM - 1;
+		last_dev %= REC_FAILED_NUM;
 		pr_err("late suspend of devices failed\n");
+		log_suspend_abort_reason("%s device failed to power down",
+			suspend_stats.failed_devs[last_dev]);
 		goto Platform_finish;
 	}
 	error = platform_suspend_prepare_late(state);
@@ -411,7 +425,11 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 
 	error = dpm_suspend_noirq(PMSG_SUSPEND);
 	if (error) {
+		last_dev = suspend_stats.last_failed_dev + REC_FAILED_NUM - 1;
+		last_dev %= REC_FAILED_NUM;
 		pr_err("noirq suspend of devices failed\n");
+		log_suspend_abort_reason("noirq suspend of %s device failed",
+			suspend_stats.failed_devs[last_dev]);
 		goto Platform_early_resume;
 	}
 	error = platform_suspend_prepare_noirq(state);
@@ -422,8 +440,10 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 		goto Platform_wake;
 
 	error = disable_nonboot_cpus();
-	if (error || suspend_test(TEST_CPUS))
+	if (error || suspend_test(TEST_CPUS)) {
+		log_suspend_abort_reason("Disabling non-boot cpus failed");
 		goto Enable_cpus;
+	}
 
 	arch_suspend_disable_irqs();
 	BUG_ON(!irqs_disabled());
@@ -438,6 +458,9 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 			trace_suspend_resume(TPS("machine_suspend"),
 				state, false);
 		} else if (*wakeup) {
+			pm_get_active_wakeup_sources(suspend_abort,
+				MAX_SUSPEND_ABORT_LEN);
+			log_suspend_abort_reason(suspend_abort);
 			error = -EBUSY;
 		}
 		syscore_resume();
@@ -487,6 +510,7 @@ int suspend_devices_and_enter(suspend_state_t state)
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
 		pr_err("Some devices failed to suspend, or early wake event detected\n");
+		log_suspend_abort_reason("Some devices failed to suspend, or early wake event detected");
 		goto Recover_platform;
 	}
 	suspend_test_finish("suspend devices");
@@ -528,6 +552,32 @@ static void suspend_finish(void)
 	pm_restore_console();
 }
 
+static void suspend_sys_sync(struct work_struct *work)
+{
+	pr_info("PM: suspend sync-queue sync begin...\n");
+	sys_sync();
+	pr_info("PM: suspend sync-queue sync done\n");
+
+	spin_lock(&suspend_sys_sync_lock);
+	sync_start = 0;
+	spin_unlock(&suspend_sys_sync_lock);
+}
+static DECLARE_WORK(suspend_sys_sync_work, suspend_sys_sync);
+
+void suspend_sys_sync_queue(void)
+{
+	int ret;
+
+	spin_lock(&suspend_sys_sync_lock);
+	if (sync_start == 0) {
+		ret = queue_work(suspend_sys_sync_work_queue,
+					&suspend_sys_sync_work);
+		if (ret)
+			sync_start = 1;
+	}
+	spin_unlock(&suspend_sys_sync_lock);
+}
+
 /**
  * enter_state - Do common work needed to enter system sleep state.
  * @state: System sleep state to enter.
@@ -539,6 +589,7 @@ static void suspend_finish(void)
 static int enter_state(suspend_state_t state)
 {
 	int error;
+	unsigned long dirty;
 
 	trace_suspend_resume(TPS("suspend_enter"), state, true);
 	if (state == PM_SUSPEND_TO_IDLE) {
@@ -553,6 +604,25 @@ static int enter_state(suspend_state_t state)
 	}
 	if (!mutex_trylock(&pm_mutex))
 		return -EBUSY;
+
+	dirty = (global_node_page_state(NR_FILE_DIRTY)
+			+ global_node_page_state(NR_WRITEBACK)) << (PAGE_SHIFT - 10);
+	spin_lock(&suspend_sys_sync_lock);
+	if (sync_start == 1) {
+		spin_unlock(&suspend_sys_sync_lock);
+		error = -EBUSY;
+		pr_info("PM: suspend sync-queue syncing(%lu kB)...\n", dirty);
+		goto Unlock;
+	}
+	spin_unlock(&suspend_sys_sync_lock);
+	if (dirty > DEEP_SLEEP_RETRY_DIRTY_WRITEBACK_THRESHOLD) {
+		if (dirty < DEEP_SLEEP_RETRY_TRIGGER_SYNC_QUEUE_THRESHOLD)
+			suspend_sys_sync_queue();
+		error = -EBUSY;
+		pr_info("PM: dirty and writeback data is %lu kB, "
+			"it's too much for sys_sync, try again!\n", dirty);
+		goto Unlock;
+	}
 
 	if (state == PM_SUSPEND_TO_IDLE)
 		s2idle_begin();
@@ -615,3 +685,21 @@ int pm_suspend(suspend_state_t state)
 	return error;
 }
 EXPORT_SYMBOL(pm_suspend);
+
+static int __init sync_queue_init(void)
+{
+	suspend_sys_sync_work_queue =
+		create_singlethread_workqueue("suspend_sys_sync");
+	if (suspend_sys_sync_work_queue == NULL)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void  __exit sync_queue_exit(void)
+{
+	destroy_workqueue(suspend_sys_sync_work_queue);
+}
+
+core_initcall(sync_queue_init);
+module_exit(sync_queue_exit);

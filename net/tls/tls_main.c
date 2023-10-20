@@ -40,6 +40,7 @@
 #include <linux/sched/signal.h>
 
 #include <net/tls.h>
+#include <net/transp_v6.h>
 
 MODULE_AUTHOR("Mellanox Technologies");
 MODULE_DESCRIPTION("Transport Layer Security Support");
